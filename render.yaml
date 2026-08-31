@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: cuevana-series-api
+    runtime: docker
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: PLATFORM
+        value: cuevana_bio
+      - key: BASE_URL
+        value: https://cuevana3i.bio
+      - key: PORT
+        value: 3000
+      - key: DRIVE_FOLDER_SERIES
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_FILE
+        value: ./service-account.json
+      - key: SEASON_CONCURRENCY
+        value: "2"
+      - key: EPISODE_CONCURRENCY
+        value: "3"
+      - key: CONCURRENCY
+        value: "2"
