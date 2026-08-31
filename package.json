@@ -1,0 +1,28 @@
+{
+  "name": "multi-platform-scraper",
+  "version": "2.2.0",
+  "description": "API cuevana_bio series + películas (Render)",
+  "type": "module",
+  "scripts": {
+    "catalogo:series": "PLATFORM=cuevana_bio node cuevana_bio/series/scrape-catalogo.js",
+    "catalogo:movies": "PLATFORM=cuevana_bio node cuevana_bio/peliculas/scrape-catalogo.js",
+    "catalogo": "npm run catalogo:series",
+    "detalles": "PLATFORM=cuevana_bio node cuevana_bio/series/scrape-detalles.js",
+    "api": "PLATFORM=cuevana_bio node api-server.js",
+    "start": "PLATFORM=cuevana_bio node api-server.js",
+    "postinstall": "npx playwright install chromium || true"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "googleapis": "^144.0.0",
+    "node-fetch": "^2.7.0",
+    "node-html-parser": "^9.0.0",
+    "playwright": "^1.62.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
