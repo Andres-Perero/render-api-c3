@@ -1,6 +1,7 @@
 /**
  * scrape-one.js
  * Scrapea UNA serie o UNA temporada y devuelve el objeto.
+ * Incluye filtrado de idioma: Prioriza LAT/Castellano. Si no hay, usa Subtitulado.
  */
 import { join } from 'node:path';
 import { chromium } from 'playwright-extra';
@@ -47,7 +48,7 @@ async function handleCloudflare(page) {
 async function gotoSafe(page, url) {
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 50_000 });
   await handleCloudflare(page);
-  await page.waitForTimeout(500);
+  await new Promise(resolve => setTimeout(resolve, 500)); // Reemplazo seguro para waitForTimeout
 }
 
 async function mapPool(items, limit, fn) {
@@ -74,11 +75,45 @@ function tryDecodeBase64(url) {
   return null;
 }
 
+/**
+ * Filtra servidores priorizando Latino y Castellano. 
+ * Si no encuentra ninguno, devuelve los Subtitulados.
+ */
+function filterServersByLanguage(servers) {
+  if (!servers || servers.length === 0) return [];
+
+  const checkLang = (server, regex) => {
+    const text = `${server.idioma || ''} ${server.lang || ''} ${server.nombre || ''}`.toLowerCase();
+    return regex.test(text);
+  };
+
+  const isLat = (s) => checkLang(s, /\b(lat|latino|latinoamérica)\b/);
+  const isCastellano = (s) => checkLang(s, /\b(castellano|español)\b/) && !checkLang(s, /\blatino\b/);
+  const isSub = (s) => checkLang(s, /\b(sub|subtitulado|vose|vo)\b/);
+
+  // 1. Buscar LAT o Castellano
+  const preferred = servers.filter(s => isLat(s) || isCastellano(s));
+  if (preferred.length > 0) {
+    return preferred;
+  }
+
+  // 2. Si no hay, buscar Subtitulado
+  const subs = servers.filter(s => isSub(s));
+  if (subs.length > 0) {
+    return subs;
+  }
+
+  // 3. Fallback: devolver todos si no coincide ninguna etiqueta conocida
+  return servers;
+}
+
 async function resolveSingleServer(page, servidor) {
   const original = servidor.url;
   if (!needsResolve(original)) {
     return { ...servidor, resolved: true };
   }
+
+  log(`        🔍 Resolviendo: ${servidor.nombre || 'Desconocido'} (${servidor.idioma || 'Sin idioma'})`);
 
   const decoded = tryDecodeBase64(original);
   if (decoded) {
@@ -107,6 +142,7 @@ async function resolveSingleServer(page, servidor) {
       const ifr = document.querySelector('iframe[src]');
       return ifr ? ifr.getAttribute('src') : null;
     }).catch(() => null);
+    
     if (iframeSrc && /^https?:\/\//i.test(iframeSrc)) {
       return {
         ...servidor,
@@ -116,7 +152,9 @@ async function resolveSingleServer(page, servidor) {
         resolvedVia: 'iframe'
       };
     }
+    log(`        ⚠️ No se pudo resolver automáticamente: ${original}`);
   } catch (e) {
+    log(`        ❌ Error resolviendo ${original}: ${e.message}`);
     return { ...servidor, resolved: false, resolveError: e.message };
   }
   return { ...servidor, resolved: false };
@@ -154,7 +192,8 @@ async function scrapeSerieMeta(page, series) {
       const fn = new Function('return (' + fnStr + ')')();
       return fn(document);
     }, extractSerieDetalleFromDOM.toString());
-  } catch {
+  } catch (err) {
+    log(`  ⚠️ Error extrayendo meta con JS: ${err.message}`);
     meta = null;
   }
 
@@ -185,14 +224,17 @@ async function scrapeSerieMeta(page, series) {
 
 async function processEpisode(page, ep, origin, resolveServers) {
   const epUrl = ep.url || ep.url_directa;
+  log(`      📺 Procesando episodio: ${ep.slug} (${epUrl})`);
   await gotoSafe(page, epUrl);
   let servers = [];
+  
   try {
     servers = await page.evaluate((fnStr) => {
       const fn = new Function('return (' + fnStr + ')')();
       return fn(document);
     }, extractServersFromTabsDOM.toString());
-  } catch {
+  } catch (err) {
+    log(`      ⚠️ Error en extractServersFromTabsDOM para ${ep.slug}: ${err.message}`);
     const html = await page.content();
     servers = parseEpisodeServers(html) || [];
   }
@@ -201,6 +243,17 @@ async function processEpisode(page, ep, origin, resolveServers) {
     ...s,
     url: absUrl(s.url, origin)
   }));
+
+  if (!servers || servers.length === 0) {
+    log(`      ❌ No se encontraron servidores para ${ep.slug}.`);
+  } else {
+    // APLICAR FILTRADO DE IDIOMA AQUÍ
+    const filteredServers = filterServersByLanguage(servers);
+    if (filteredServers.length < servers.length) {
+      log(`      🔠 Filtrado de idioma: ${servers.length} originales -> ${filteredServers.length} filtrados (LAT/Castellano o Sub).`);
+    }
+    servers = filteredServers;
+  }
 
   let resolved = servers;
   if (resolveServers && servers.length) {
@@ -242,11 +295,11 @@ async function processSeason(context, season, opts) {
         const fn = new Function('return (' + fnStr + ')')();
         return fn(document);
       }, extractEpisodesFromSeasonDOM.toString());
-    } catch {
+    } catch (err) {
+      log(`    ⚠️ Error extrayendo lista de episodios: ${err.message}`);
       episodes = [];
     }
 
-    // extractor usa url_directa
     episodes = (episodes || []).map((e) => ({
       ...e,
       url: absUrl(e.url_directa || e.url || e.href, origin)
@@ -254,6 +307,31 @@ async function processSeason(context, season, opts) {
 
     log(`    Episodios encontrados: ${episodes.length}`);
     if (opts.maxEpisodes > 0) episodes = episodes.slice(0, opts.maxEpisodes);
+
+    if (opts.listOnly) {
+      const epDetails = episodes.map((ep) => ({
+        slug: ep.slug,
+        numero: ep.numero ?? ep.episodio,
+        temporada: ep.temporada ?? season.numero,
+        titulo: ep.titulo || ep.slug,
+        url: ep.url,
+        poster: ep.poster || null,
+        servidores: []
+      }));
+      return {
+        seasonData: {
+          numero: season.numero,
+          label: season.label || `Temporada ${season.numero}`,
+          url: season.url,
+          poster: season.poster || null,
+          total_episodios: epDetails.length,
+          episodios: epDetails
+        },
+        nSrv: 0,
+        nRes: 0,
+        nEps: epDetails.length
+      };
+    }
 
     const epConcurrency = Math.max(1, opts.episodeConcurrency || 3);
     const epPages = [];
@@ -268,10 +346,10 @@ async function processSeason(context, season, opts) {
       const p = epPages[epIdx++ % epPages.length];
       try {
         const r = await processEpisode(p, ep, origin, opts.resolveServers);
-        log(`      Ep ${ep.slug}: ${r.nSrv} srv (${r.nRes} res)`);
+        log(`      ✅ Ep ${ep.slug}: ${r.nSrv} srv (${r.nRes} res)`);
         return r;
       } catch (err) {
-        log(`      Ep ${ep.slug} ERROR: ${err.message}`);
+        log(`      ❌ Ep ${ep.slug} ERROR: ${err.message}`);
         return {
           detail: {
             slug: ep.slug,
@@ -311,12 +389,10 @@ async function processSeason(context, season, opts) {
 
 /**
  * Scrapea solo UNA temporada (episodios + servidores resueltos).
- * @param {object} series - { slug, url_directa, titulo? }
- * @param {number} seasonNum - número de temporada (1-based)
- * @param {object} options
  */
 export async function scrapeOneSeason(series, seasonNum, options = {}) {
-  const resolveServers = options.resolveServers !== false;
+  const resolveServers = options.resolveServers === true;
+  const listOnly = options.listOnly !== false && !resolveServers;
   const maxEpisodes = options.maxEpisodes || 0;
   const episodeConcurrency = Math.max(1, parseInt(process.env.EPISODE_CONCURRENCY || '3', 10));
   const userDataDir = options.userDataDir || join(CONFIG.ROOT_DIR, '.browser-profile');
@@ -338,7 +414,6 @@ export async function scrapeOneSeason(series, seasonNum, options = {}) {
     const seasons = meta.temporadasMeta || [];
     let season = seasons.find((s) => Number(s.numero) === Number(seasonNum));
 
-    // fallback: construir URL si no está en meta
     if (!season) {
       const base = (series.url_directa || meta.url_directa || '').replace(/\/+$/, '');
       season = {
@@ -347,11 +422,12 @@ export async function scrapeOneSeason(series, seasonNum, options = {}) {
         url: `${base}/temporada-${seasonNum}`,
         poster: null
       };
-      log(`  Temporada no en meta → URL construida: ${season.url}`);
+      log(`  ⚠️ Temporada no en meta → URL construida: ${season.url}`);
     }
 
     const result = await processSeason(context, season, {
       resolveServers,
+      listOnly,
       maxEpisodes,
       episodeConcurrency
     });
@@ -382,9 +458,102 @@ export async function scrapeOneSeason(series, seasonNum, options = {}) {
 }
 
 /**
+ * Resuelve servidores de UN episodio.
+ */
+export async function scrapeOneEpisode(series, seasonNum, epSlug, options = {}) {
+  const resolveServers = options.resolveServers !== false;
+  const userDataDir = options.userDataDir || join(CONFIG.ROOT_DIR, '.browser-profile');
+
+  const context = await launchContext(userDataDir);
+  try {
+    log(`▶ Episodio: ${series.slug} T${seasonNum} ${epSlug}`);
+
+    const metaPage = await context.newPage();
+    await setupPage(metaPage);
+    let meta;
+    try {
+      meta = await scrapeSerieMeta(metaPage, series);
+    } finally {
+      await metaPage.close().catch(() => {});
+    }
+
+    const seasons = meta.temporadasMeta || [];
+    let season = seasons.find((s) => Number(s.numero) === Number(seasonNum));
+    if (!season) {
+      const base = (series.url_directa || meta.url_directa || '').replace(/\/+$/, '');
+      season = {
+        numero: seasonNum,
+        label: `Temporada ${seasonNum}`,
+        url: `${base}/temporada-${seasonNum}`,
+        poster: null
+      };
+    }
+
+    const listPage = await context.newPage();
+    await setupPage(listPage);
+    let episodes = [];
+    let origin = '';
+    try {
+      await gotoSafe(listPage, season.url);
+      origin = await listPage.evaluate(() => location.origin);
+      episodes = await listPage.evaluate((fnStr) => {
+        const fn = new Function('return (' + fnStr + ')')();
+        return fn(document);
+      }, extractEpisodesFromSeasonDOM.toString());
+      episodes = (episodes || []).map((e) => ({
+        ...e,
+        url: absUrl(e.url_directa || e.url || e.href, origin)
+      })).filter((e) => e.url);
+    } finally {
+      await listPage.close().catch(() => {});
+    }
+
+    const want = String(epSlug || '').trim().toLowerCase();
+    let ep = episodes.find((e) => {
+      const slug = String(e.slug || '').toLowerCase();
+      const num = String(e.numero ?? e.episodio ?? '');
+      return slug === want || slug === `${seasonNum}x${want}` || num === want ||
+        (e.url && e.url.includes(want));
+    });
+
+    if (!ep) {
+      const base = (series.url_directa || meta.url_directa || '').replace(/\/+$/, '');
+      const sx = want.includes('x') ? want : `${seasonNum}x${want}`;
+      ep = {
+        slug: sx,
+        numero: parseInt(String(sx).split('x').pop(), 10) || 1,
+        temporada: seasonNum,
+        titulo: `Episodio ${sx}`,
+        url: `${base}/episodio-${sx}`
+      };
+      log(`  ⚠️ Ep no en lista → URL construida: ${ep.url}`);
+    }
+
+    const page = await context.newPage();
+    await setupPage(page);
+    try {
+      const r = await processEpisode(page, ep, origin || new URL(ep.url).origin, resolveServers);
+      return {
+        slug: meta.slug || series.slug,
+        titulo: meta.titulo || series.titulo || series.slug,
+        temporada: seasonNum,
+        episodio: r.detail,
+        serversResolution: resolveServers
+          ? { total: r.nSrv, resueltos: r.nRes, completo: r.nSrv === 0 || r.nRes === r.nSrv }
+          : undefined,
+        scrapedAt: new Date().toISOString(),
+        status: 'ok'
+      };
+    } finally {
+      await page.close().catch(() => {});
+    }
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
+/**
  * Scrapea una serie completa (solo meta + lista de temps; episodios opcional).
- * Por defecto NO baja episodios (maxSeasons=0 + skipEps implícito vía maxSeasons).
- * Usa maxSeasons / maxEpisodes para limitar.
  */
 export async function scrapeOneSeries(series, options = {}) {
   const resolveServers = options.resolveServers !== false;
@@ -412,7 +581,6 @@ export async function scrapeOneSeries(series, options = {}) {
     let seasons = meta.temporadasMeta || [];
     if (maxSeasons > 0) seasons = seasons.slice(0, maxSeasons);
 
-    // Solo meta + lista de temporadas (sin episodios) — comportamiento actual deseado
     if (!includeEpisodes) {
       return {
         slug: meta.slug,
@@ -450,7 +618,7 @@ export async function scrapeOneSeries(series, options = {}) {
           episodeConcurrency
         });
       } catch (e) {
-        log(`    ERROR T${season.numero}: ${e.message}`);
+        log(`    ❌ ERROR T${season.numero}: ${e.message}`);
         return {
           seasonData: {
             numero: season.numero,
