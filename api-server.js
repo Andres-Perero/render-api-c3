@@ -16,7 +16,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { CONFIG, log } from './shared/config.js';
 import { getJsonFromDrive } from './shared/drive-client.js';
 import { ensureDir } from './shared/state-manager.js';
+<<<<<<< HEAD
 import { scrapeOneSeries, scrapeOneSeason, scrapeOneEpisode } from './cuevana_bio/series/scrape-one.js';
+=======
+import { scrapeOneSeries, scrapeOneSeason } from './cuevana_bio/series/scrape-one.js';
+>>>>>>> 60fe6c03833519989c5782b9b3ca8a1ea1363ea1
 import { scrapeOneMovie } from './cuevana_bio/peliculas/scrape-one.js';
 
 const app = express();
@@ -218,11 +222,14 @@ app.get('/api/series/:slug', async (req, res) => {
   }
 });
 
+<<<<<<< HEAD
 /**
  * GET /api/series/:slug/tempN
  * Lista de episodios SIN resolver servidores (rápido).
  * ?resolve=1 → además visita cada ep y resuelve (lento, legacy)
  */
+=======
+>>>>>>> 60fe6c03833519989c5782b9b3ca8a1ea1363ea1
 app.get('/api/series/:slug/:seasonParam', async (req, res) => {
   const slug = (req.params.slug || '').trim().replace(/\/+$/, '');
   const seasonNum = parseSeasonParam(req.params.seasonParam);
@@ -235,16 +242,24 @@ app.get('/api/series/:slug/:seasonParam', async (req, res) => {
     });
   }
 
+<<<<<<< HEAD
   const resolveServers = req.query.resolve === '1';
   log(`API temporada: ${slug} T${seasonNum} listOnly=${!resolveServers}`);
+=======
+  log(`API temporada: ${slug} T${seasonNum}`);
+>>>>>>> 60fe6c03833519989c5782b9b3ca8a1ea1363ea1
   try {
     const catalog = await loadCatalog('series');
     const series = findInCatalog(catalog, slug) || buildSeriesFromSlug(slug);
     ensureDir(USER_DATA_DIR);
 
     const details = await scrapeOneSeason(series, seasonNum, {
+<<<<<<< HEAD
       resolveServers,
       listOnly: !resolveServers,
+=======
+      resolveServers: req.query.resolve !== '0',
+>>>>>>> 60fe6c03833519989c5782b9b3ca8a1ea1363ea1
       maxEpisodes: parseInt(req.query.maxEpisodes || '0', 10) || 0,
       userDataDir: USER_DATA_DIR
     });
@@ -261,6 +276,7 @@ app.get('/api/series/:slug/:seasonParam', async (req, res) => {
   }
 });
 
+<<<<<<< HEAD
 /**
  * GET /api/series/:slug/tempN/11x1  (o /tempN/1)
  * Resuelve servidores de UN solo episodio.
@@ -300,6 +316,8 @@ app.get('/api/series/:slug/:seasonParam/:epParam', async (req, res) => {
   }
 });
 
+=======
+>>>>>>> 60fe6c03833519989c5782b9b3ca8a1ea1363ea1
 // ─── Movies ──────────────────────────────────────────────────
 /**
  * GET /api/movies/:slug
