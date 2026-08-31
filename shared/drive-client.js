@@ -1,8 +1,16 @@
 /**
  * shared/drive-client.js
- * Cliente de Google Drive reutilizable usando Service Account.
- * Requiere: npm install googleapis
- * Variable de entorno: GOOGLE_SERVICE_ACCOUNT_FILE=./service-account.json
+ *
+ * Auth SOLO por env (sin archivo en el repo):
+ *   GOOGLE_SERVICE_ACCOUNT_JSON  → JSON completo de la service account
+ *
+ * Alternativa (campos sueltos):
+ *   GOOGLE_CLIENT_EMAIL
+ *   GOOGLE_PRIVATE_KEY
+ *   GOOGLE_PROJECT_ID (opcional)
+ *
+ * Local opcional:
+ *   GOOGLE_SERVICE_ACCOUNT_FILE → ruta a service-account.json
  */
 import { google } from 'googleapis';
 import { readFileSync, createReadStream, createWriteStream, existsSync } from 'node:fs';
@@ -11,31 +19,62 @@ import path from 'node:path';
 const SCOPES = ['https://www.googleapis.com/auth/drive'];
 let _driveClient = null;
 
-/**
- * Crea o reutiliza el cliente autenticado de Drive
- * @param {string} credentialsPath 
- * @returns {import('googleapis').drive_v3.Drive}
- */
-export function getDriveClient(credentialsPath = process.env.GOOGLE_SERVICE_ACCOUNT_FILE || './service-account.json') {
-  if (_driveClient) return _driveClient;
-  
-  const resolved = path.resolve(credentialsPath);
-  if (!existsSync(resolved)) {
-    throw new Error(`No se encontró el archivo de credenciales: ${resolved}`);
+function loadServiceAccountKey() {
+  // ── 1) JSON completo en una sola env ───────────────────────
+  const rawJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (rawJson && rawJson.trim()) {
+    const key = JSON.parse(rawJson);
+    if (key.private_key && key.private_key.includes('\\n')) {
+      key.private_key = key.private_key.replace(/\\n/g, '\n');
+    }
+    return key;
   }
-  
-  const key = JSON.parse(readFileSync(resolved, 'utf8'));
+
+  // ── 2) Campos sueltos en env ───────────────────────────────
+  const email = process.env.GOOGLE_CLIENT_EMAIL;
+  let privateKey = process.env.GOOGLE_PRIVATE_KEY;
+  if (email && privateKey) {
+    // Render a veces guarda con comillas envolventes
+    privateKey = privateKey.replace(/^["']|["']$/g, '');
+    if (privateKey.includes('\\n')) {
+      privateKey = privateKey.replace(/\\n/g, '\n');
+    }
+    return {
+      type: 'service_account',
+      project_id: process.env.GOOGLE_PROJECT_ID || 'storage-web-scraping',
+      private_key_id: process.env.GOOGLE_PRIVATE_KEY_ID || '',
+      private_key: privateKey,
+      client_email: email,
+      client_id: process.env.GOOGLE_CLIENT_ID || '',
+      auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+      token_uri: 'https://oauth2.googleapis.com/token'
+    };
+  }
+
+  // ── 3) Archivo local (solo desarrollo) ─────────────────────
+  const credentialsPath =
+    process.env.GOOGLE_SERVICE_ACCOUNT_FILE || './service-account.json';
+  const resolved = path.resolve(credentialsPath);
+  if (existsSync(resolved)) {
+    return JSON.parse(readFileSync(resolved, 'utf8'));
+  }
+
+  throw new Error(
+    'Sin credenciales de Drive. Define en Render: ' +
+      'GOOGLE_SERVICE_ACCOUNT_JSON (JSON completo) ' +
+      'o GOOGLE_CLIENT_EMAIL + GOOGLE_PRIVATE_KEY'
+  );
+}
+
+export function getDriveClient() {
+  if (_driveClient) return _driveClient;
+
+  const key = loadServiceAccountKey();
   const auth = new google.auth.JWT(key.client_email, null, key.private_key, SCOPES);
   _driveClient = google.drive({ version: 'v3', auth });
   return _driveClient;
 }
 
-/**
- * Busca un archivo por nombre dentro de una carpeta de Drive
- * @param {string} folderId 
- * @param {string} fileName 
- * @returns {Promise<string|null>} fileId o null
- */
 export async function findFileInFolder(folderId, fileName) {
   const drive = getDriveClient();
   const safeName = fileName.replace(/'/g, "\\'");
@@ -48,14 +87,6 @@ export async function findFileInFolder(folderId, fileName) {
   return files.length ? files[0].id : null;
 }
 
-/**
- * Sube o actualiza un archivo en Drive
- * @param {string} folderId 
- * @param {string} fileName 
- * @param {string} localFilePath 
- * @param {string} mimeType 
- * @returns {Promise<{action: string, id: string, name: string}>}
- */
 export async function uploadOrUpdateFile(folderId, fileName, localFilePath, mimeType = 'application/json') {
   const drive = getDriveClient();
   const existingId = await findFileInFolder(folderId, fileName);
@@ -78,13 +109,6 @@ export async function uploadOrUpdateFile(folderId, fileName, localFilePath, mime
   return { action: 'created', ...res.data };
 }
 
-/**
- * Descarga un archivo de Drive a una ruta local
- * @param {string} folderId 
- * @param {string} fileName 
- * @param {string} destLocalPath 
- * @returns {Promise<string|null>} fileId descargado o null
- */
 export async function downloadFile(folderId, fileName, destLocalPath) {
   const drive = getDriveClient();
   const fileId = await findFileInFolder(folderId, fileName);
@@ -98,12 +122,6 @@ export async function downloadFile(folderId, fileName, destLocalPath) {
   return fileId;
 }
 
-/**
- * Obtiene contenido JSON directamente desde Drive sin escribir a disco
- * @param {string} folderId 
- * @param {string} fileName 
- * @returns {Promise<object|null>}
- */
 export async function getJsonFromDrive(folderId, fileName) {
   const drive = getDriveClient();
   const fileId = await findFileInFolder(folderId, fileName);
