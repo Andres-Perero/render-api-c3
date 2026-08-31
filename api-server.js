@@ -22,6 +22,16 @@ import { scrapeOneMovie } from './cuevana_bio/peliculas/scrape-one.js';
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
+// CORS — permite front en cualquier origen (file://, localhost, Vercel, etc.)
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  next();
+});
+
 const DRIVE_FOLDER_SERIES =
   process.env.DRIVE_FOLDER_SERIES ||
   process.env.DRIVE_FOLDER_CUEVANA_BIO ||
@@ -108,14 +118,6 @@ function buildMovieFromSlug(slug) {
     plataforma: 'Cuevana3',
     type: 'movie'
   };
-}
-function sendJson(res, status, payload) {
-  const body = JSON.stringify(payload, null, 2);
-  res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*'
-  });
-  res.end(body);
 }
 
 function parseSeasonParam(raw) {
@@ -271,7 +273,7 @@ app.get('/api/movies/:slug', async (req, res) => {
       resolveServers: req.query.resolve !== '0',
       userDataDir: USER_DATA_DIR
     });
-     return sendJson(res, 200,     res.json(details));
+    res.json(details);
   } catch (err) {
     log(`ERROR /api/movies/${slug}: ${err.message}`);
     res.status(500).json({
